@@ -22,13 +22,34 @@ WEATHER_URL = (
 NEWS_FEEDS = [
     ("World", "https://feeds.bbci.co.uk/news/world/rss.xml"),
     ("Business", "https://feeds.bbci.co.uk/news/business/rss.xml"),
+    ("Ecuador", "https://www.elcomercio.com/feed"),
+    ("Econ Research", "https://www.nber.org/rss/new.xml"),
+    ("Canada Econ", "https://www.cbc.ca/webfeed/rss/rss-business"),
+    ("Hacker News", "https://news.ycombinator.com/rss"),
+    ("INEC", "https://www.ecuadorencifras.gob.ec/feed/"),
+    # StatCan retired its old dai-quo RSS endpoint; a site-scoped Google
+    # News search is the closest working substitute for "The Daily".
+    (
+        "StatCan",
+        "https://news.google.com/rss/search?q=site:statcan.gc.ca&hl=en-CA&gl=CA&ceid=CA:en",
+    ),
+    # VoxEU's own rss.xml only lists research-programme categories, not
+    # columns, since the site merged into cepr.org — same substitution.
+    (
+        "VoxEU",
+        "https://news.google.com/rss/search?q=site:cepr.org/voxeu&hl=en-GB&gl=GB&ceid=GB:en",
+    ),
+    ("Bank of Canada", "https://www.bankofcanada.ca/content_type/press-releases/feed/"),
 ]
 
 WEATHER_MINUTES = 15
 NEWS_MINUTES = 20
 HEADLINE_GROUP_SECONDS = 15
-HEADLINES_PER_FEED = 5
+HEADLINES_PER_FEED = 3
 HEADLINES_VISIBLE = 3
+
+# Some feed hosts reject requests with no User-Agent header.
+REQUEST_HEADERS = {"User-Agent": "Mozilla/5.0 (desktop-widget)"}
 
 SMALL_WIDTH, SMALL_HEIGHT = 280, 150
 FULL_WIDTH, FULL_HEIGHT = 300, 380
@@ -99,7 +120,9 @@ MUTED = "#9a9a9a"
 
 
 def fetch_weather() -> tuple[str, str]:
-    with urllib.request.urlopen(WEATHER_URL, timeout=10) as response:
+    request = urllib.request.Request(WEATHER_URL, headers=REQUEST_HEADERS)
+
+    with urllib.request.urlopen(request, timeout=10) as response:
         payload = loads(response.read())
 
     current = payload["current"]
@@ -113,18 +136,43 @@ def fetch_weather() -> tuple[str, str]:
     return icon, text
 
 
+def fetch_one_feed(feed_url: str) -> list[tuple[str, str]]:
+    request = urllib.request.Request(feed_url, headers=REQUEST_HEADERS)
+
+    with urllib.request.urlopen(request, timeout=10) as response:
+        # A leading byte-order mark or stray whitespace before the XML
+        # declaration (seen on some feeds, e.g. INEC's) makes ElementTree
+        # reject an otherwise valid document.
+        raw = response.read().lstrip()
+
+    root = ET.fromstring(raw)
+
+    # "{*}item" matches both plain RSS 2.0 (<item> with no namespace) and
+    # RSS 1.0/RDF feeds (e.g. Bank of Canada's), where every element is
+    # namespaced and "./channel/item" would silently find nothing.
+    items = root.findall(".//{*}item")[:HEADLINES_PER_FEED]
+
+    return [
+        (
+            item.findtext("{*}title", default="").strip(),
+            item.findtext("{*}link", default="").strip(),
+        )
+        for item in items
+    ]
+
+
 def fetch_headlines() -> list[tuple[str, str, str]]:
     headlines = []
 
     for label, feed_url in NEWS_FEEDS:
-        with urllib.request.urlopen(feed_url, timeout=10) as response:
-            root = ET.fromstring(response.read())
+        try:
+            feed_items = fetch_one_feed(feed_url)
+        except Exception:
+            # One unreachable or malformed feed should not blank out the
+            # headlines from every other, working feed.
+            continue
 
-        items = root.findall("./channel/item")[:HEADLINES_PER_FEED]
-
-        for item in items:
-            title = item.findtext("title", default="").strip()
-            link = item.findtext("link", default="").strip()
+        for title, link in feed_items:
             headlines.append((label, title, link))
 
     return headlines
