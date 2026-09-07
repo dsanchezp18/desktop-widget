@@ -27,12 +27,7 @@ NEWS_FEEDS = [
     ("Canada Econ", "https://www.cbc.ca/webfeed/rss/rss-business"),
     ("Hacker News", "https://news.ycombinator.com/rss"),
     ("INEC", "https://www.ecuadorencifras.gob.ec/feed/"),
-    # StatCan retired its old dai-quo RSS endpoint; a site-scoped Google
-    # News search is the closest working substitute for "The Daily".
-    (
-        "StatCan",
-        "https://news.google.com/rss/search?q=site:statcan.gc.ca&hl=en-CA&gl=CA&ceid=CA:en",
-    ),
+    ("StatCan", "https://www150.statcan.gc.ca/n1/rss/dai-quo/0-eng.atom"),
     # VoxEU's own rss.xml only lists research-programme categories, not
     # columns, since the site merged into cepr.org — same substitution.
     (
@@ -136,6 +131,30 @@ def fetch_weather() -> tuple[str, str]:
     return icon, text
 
 
+def _entry_title(entry: ET.Element) -> str:
+    title_element = entry.find("{*}title")
+
+    if title_element is None:
+        return ""
+
+    # A plain RSS/RDF title is a single text node, so itertext() just
+    # yields it. An Atom title with type="xhtml" (e.g. StatCan's feed)
+    # nests the real text inside an xhtml <div>/<span>; itertext() walks
+    # those children too, so one code path covers both shapes.
+    return "".join(title_element.itertext()).strip()
+
+
+def _entry_link(entry: ET.Element) -> str:
+    link_element = entry.find("{*}link")
+
+    if link_element is None:
+        return ""
+
+    # RSS/RDF put the URL as the element's text; Atom puts it in an
+    # href attribute instead.
+    return (link_element.get("href") or link_element.text or "").strip()
+
+
 def fetch_one_feed(feed_url: str) -> list[tuple[str, str]]:
     request = urllib.request.Request(feed_url, headers=REQUEST_HEADERS)
 
@@ -147,18 +166,13 @@ def fetch_one_feed(feed_url: str) -> list[tuple[str, str]]:
 
     root = ET.fromstring(raw)
 
-    # "{*}item" matches both plain RSS 2.0 (<item> with no namespace) and
-    # RSS 1.0/RDF feeds (e.g. Bank of Canada's), where every element is
-    # namespaced and "./channel/item" would silently find nothing.
-    items = root.findall(".//{*}item")[:HEADLINES_PER_FEED]
+    # "{*}item"/"{*}entry" match RSS 2.0 (<item>, no namespace), RSS
+    # 1.0/RDF (e.g. Bank of Canada's, namespaced), and Atom (<entry>,
+    # e.g. StatCan's) alike — "./channel/item" would miss the latter two.
+    entries = root.findall(".//{*}item") or root.findall(".//{*}entry")
+    entries = entries[:HEADLINES_PER_FEED]
 
-    return [
-        (
-            item.findtext("{*}title", default="").strip(),
-            item.findtext("{*}link", default="").strip(),
-        )
-        for item in items
-    ]
+    return [(_entry_title(entry), _entry_link(entry)) for entry in entries]
 
 
 def fetch_headlines() -> list[tuple[str, str, str]]:
