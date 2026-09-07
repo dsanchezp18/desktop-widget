@@ -6,6 +6,7 @@ import urllib.request
 import webbrowser
 import xml.etree.ElementTree as ET
 from datetime import datetime
+from email.utils import parsedate_to_datetime
 from json import loads
 
 # Edmonton, AB coordinates.
@@ -20,24 +21,18 @@ WEATHER_URL = (
 )
 
 NEWS_FEEDS = [
+    # --- World / global -------------------------------------------------
     ("World", "https://feeds.bbci.co.uk/news/world/rss.xml"),
     ("Business", "https://feeds.bbci.co.uk/news/business/rss.xml"),
-    ("El Comercio", "https://www.elcomercio.com/feed"),
-    ("Econ Research", "https://www.nber.org/rss/new.xml"),
-    ("Canada Econ", "https://www.cbc.ca/webfeed/rss/rss-business"),
+    ("The Economist", "https://www.economist.com/finance-and-economics/rss.xml"),
     ("Hacker News", "https://news.ycombinator.com/rss"),
+    # --- Ecuador ----------------------------------------------------------
+    ("El Comercio", "https://www.elcomercio.com/feed"),
     ("INEC", "https://www.ecuadorencifras.gob.ec/feed/"),
-    ("StatCan", "https://www150.statcan.gc.ca/n1/rss/dai-quo/0-eng.atom"),
-    # VoxEU's own rss.xml only lists research-programme categories, not
-    # columns, since the site merged into cepr.org — same substitution.
-    (
-        "VoxEU",
-        "https://news.google.com/rss/search?q=site:cepr.org/voxeu&hl=en-GB&gl=GB&ceid=GB:en",
-    ),
     # Primicias is a client-rendered SPA with no server-side RSS, and GK
     # and La Hora both return 403 to a plain script request (Cloudflare
     # bot protection) — a site-scoped Google News search is the working
-    # substitute for all three, same pattern as VoxEU/StatCan above.
+    # substitute for all three, same pattern as VoxEU/StatCan below.
     (
         "Primicias",
         "https://news.google.com/rss/search?q=site:primicias.ec&hl=es-419&gl=EC&ceid=EC:es-419",
@@ -50,8 +45,18 @@ NEWS_FEEDS = [
         "La Hora",
         "https://news.google.com/rss/search?q=site:lahora.com.ec&hl=es-419&gl=EC&ceid=EC:es-419",
     ),
+    # --- Canada -----------------------------------------------------------
+    ("Canada Econ", "https://www.cbc.ca/webfeed/rss/rss-business"),
+    ("StatCan", "https://www150.statcan.gc.ca/n1/rss/dai-quo/0-eng.atom"),
     ("Bank of Canada", "https://www.bankofcanada.ca/content_type/press-releases/feed/"),
-    ("The Economist", "https://www.economist.com/finance-and-economics/rss.xml"),
+    # --- Economic research --------------------------------------------
+    ("Econ Research", "https://www.nber.org/rss/new.xml"),
+    # VoxEU's own rss.xml only lists research-programme categories, not
+    # columns, since the site merged into cepr.org — same substitution.
+    (
+        "VoxEU",
+        "https://news.google.com/rss/search?q=site:cepr.org/voxeu&hl=en-GB&gl=GB&ceid=GB:en",
+    ),
 ]
 
 WEATHER_MINUTES = 15
@@ -192,7 +197,34 @@ def _entry_link(entry: ET.Element) -> str:
     return (link_element.get("href") or link_element.text or "").strip()
 
 
-def fetch_one_feed(feed_url: str) -> list[tuple[str, str]]:
+def _entry_date(entry: ET.Element) -> str:
+    # RSS 2.0 (BBC, El Comercio, CBC, INEC, The Economist, Hacker News,
+    # the Google News proxies) uses RFC 822 <pubDate>.
+    pub_date = entry.findtext("{*}pubDate")
+
+    if pub_date:
+        try:
+            return parsedate_to_datetime(pub_date.strip()).strftime("%b %d")
+        except (TypeError, ValueError):
+            pass
+
+    # Atom (StatCan) uses ISO 8601 <updated>/<published>; RSS 1.0/RDF
+    # (Bank of Canada) uses ISO 8601 <dc:date> — "{*}date" ignores the
+    # dc: namespace URI and matches on the local tag name alone.
+    for tag in ("updated", "published", "date"):
+        raw_date = entry.findtext(f"{{*}}{tag}")
+
+        if raw_date:
+            try:
+                return datetime.fromisoformat(raw_date.strip()).strftime("%b %d")
+            except ValueError:
+                continue
+
+    # NBER's feed carries no per-item date at all — nothing to show.
+    return ""
+
+
+def fetch_one_feed(feed_url: str) -> list[tuple[str, str, str]]:
     request = urllib.request.Request(feed_url, headers=REQUEST_HEADERS)
 
     with urllib.request.urlopen(request, timeout=10) as response:
@@ -209,7 +241,10 @@ def fetch_one_feed(feed_url: str) -> list[tuple[str, str]]:
     entries = root.findall(".//{*}item") or root.findall(".//{*}entry")
     entries = entries[:HEADLINES_PER_FEED]
 
-    return [(_entry_title(entry), _entry_link(entry)) for entry in entries]
+    return [
+        (_entry_title(entry), _entry_link(entry), _entry_date(entry))
+        for entry in entries
+    ]
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -219,7 +254,21 @@ def _truncate(text: str, limit: int) -> str:
     return text[: limit - 1].rstrip() + "…"
 
 
-def fetch_headlines() -> list[tuple[str, str, str]]:
+def _format_headline(source: str, title: str, date: str, limit: int) -> str:
+    prefix = f"[{source}] "
+    # NBER's feed carries no per-item date at all (checked: absent from
+    # both the item and the channel) — "new" is honest here since it's
+    # literally the "new working papers" feed, rather than a fabricated
+    # date. Every headline still gets a "(...)" suffix either way.
+    suffix = f" ({date or 'new'})"
+    # The suffix must always show in full, so only the title is
+    # truncated to fit what's left of the character budget.
+    title_budget = max(limit - len(prefix) - len(suffix), 10)
+
+    return f"{prefix}{_truncate(title, title_budget)}{suffix}"
+
+
+def fetch_headlines() -> list[tuple[str, str, str, str]]:
     headlines = []
 
     for label, feed_url in NEWS_FEEDS:
@@ -230,8 +279,8 @@ def fetch_headlines() -> list[tuple[str, str, str]]:
             # headlines from every other, working feed.
             continue
 
-        for title, link in feed_items:
-            headlines.append((label, title, link))
+        for title, link, date in feed_items:
+            headlines.append((label, title, link, date))
 
     return headlines
 
@@ -239,8 +288,8 @@ def fetch_headlines() -> list[tuple[str, str, str]]:
 class DesktopWidget:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.headlines: list[tuple[str, str, str]] = []
-        self.visible_headlines: list[tuple[str, str, str]] = []
+        self.headlines: list[tuple[str, str, str, str]] = []
+        self.visible_headlines: list[tuple[str, str, str, str]] = []
         self.headline_index = 0
         self.expanded = True
         self.minimized = False
@@ -481,7 +530,7 @@ class DesktopWidget:
 
         self.root.after(0, lambda: self._store_headlines(headlines))
 
-    def _store_headlines(self, headlines: list[tuple[str, str, str]]) -> None:
+    def _store_headlines(self, headlines: list[tuple[str, str, str, str]]) -> None:
         if headlines:
             self.headlines = headlines
             self.headline_index = 0
@@ -501,9 +550,9 @@ class DesktopWidget:
 
             for index, headline_label in enumerate(self.headline_labels):
                 if index < len(visible):
-                    source, title, _link = visible[index]
+                    source, title, _link, date = visible[index]
                     headline_label.config(
-                        text=_truncate(f"[{source}] {title}", MAX_HEADLINE_CHARS)
+                        text=_format_headline(source, title, date, MAX_HEADLINE_CHARS)
                     )
                 else:
                     headline_label.config(text="")
@@ -516,7 +565,7 @@ class DesktopWidget:
         if index >= len(self.visible_headlines):
             return
 
-        _source, _title, link = self.visible_headlines[index]
+        _source, _title, link, _date = self.visible_headlines[index]
 
         if link:
             webbrowser.open(link)
