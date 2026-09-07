@@ -57,6 +57,12 @@ NEWS_FEEDS = [
 WEATHER_MINUTES = 15
 NEWS_MINUTES = 20
 HEADLINE_GROUP_SECONDS = 15
+# Caps a headline (including its "[Source] " prefix) to roughly 2 wrapped
+# lines at HEADLINE_FONT/the headline wraplength. Without this cap, a long
+# title (CBC and The Economist both run long) wraps to 3+ lines and the
+# fixed-size window — which never resizes to content, unlike a normal
+# scrollable feed — clips it instead of showing it in full.
+MAX_HEADLINE_CHARS = 85
 HEADLINES_PER_FEED = 3
 HEADLINES_VISIBLE = 3
 
@@ -64,7 +70,7 @@ HEADLINES_VISIBLE = 3
 REQUEST_HEADERS = {"User-Agent": "Mozilla/5.0 (desktop-widget)"}
 
 SMALL_WIDTH, SMALL_HEIGHT = 195, 105
-FULL_WIDTH, FULL_HEIGHT = 300, 380
+FULL_WIDTH, FULL_HEIGHT = 300, 400
 
 # Matches the Libertinus serif face used in Daniel's ECON 899 paper —
 # Libertinus itself isn't registered as a system font on Windows, but
@@ -78,7 +84,7 @@ WEATHER_ICON_FONT_FULL = ("Segoe UI Emoji", 22)
 WEATHER_ICON_FONT_SMALL = ("Segoe UI Emoji", 16)
 WEATHER_TEXT_FONT_FULL = (TEXT_FAMILY, 12)
 WEATHER_TEXT_FONT_SMALL = (TEXT_FAMILY, 10)
-HEADLINE_FONT = (TEXT_FAMILY, 10)
+HEADLINE_FONT = (TEXT_FAMILY, 13)
 
 # WMO weather codes (Open-Meteo), grouped into short display text and icon.
 WEATHER_CODES = {
@@ -204,6 +210,13 @@ def fetch_one_feed(feed_url: str) -> list[tuple[str, str]]:
     entries = entries[:HEADLINES_PER_FEED]
 
     return [(_entry_title(entry), _entry_link(entry)) for entry in entries]
+
+
+def _truncate(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+
+    return text[: limit - 1].rstrip() + "…"
 
 
 def fetch_headlines() -> list[tuple[str, str, str]]:
@@ -489,7 +502,9 @@ class DesktopWidget:
             for index, headline_label in enumerate(self.headline_labels):
                 if index < len(visible):
                     source, title, _link = visible[index]
-                    headline_label.config(text=f"[{source}] {title}")
+                    headline_label.config(
+                        text=_truncate(f"[{source}] {title}", MAX_HEADLINE_CHARS)
+                    )
                 else:
                     headline_label.config(text="")
 
