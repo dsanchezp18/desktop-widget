@@ -1,8 +1,8 @@
 # Desktop Widget
 
 A small, borderless, always-on-top Windows widget showing the current time,
-Edmonton weather (with a condition icon), and rotating headlines from 14
-news and research sources.
+Edmonton weather (with a condition icon), and rotating headlines from 12
+news sources.
 
 ## Features
 
@@ -10,9 +10,9 @@ news and research sources.
 - **Weather**: current temperature, "feels like," and a condition icon
   (☀️ ⛅ ☁️ 🌧️ 🌨️ ⛈️ etc.) for Edmonton, AB, via [Open-Meteo](https://open-meteo.com/)
   (no API key required).
-- **News**: 3 headlines shown at once, in a small serif font, rotating to
-  the next 3 every 15 seconds. Click any headline to open it in your
-  browser.
+- **News**: 3 headlines shown at once, each tagged with its source and
+  publication date (e.g. `[World] ... (Sep 07)`), rotating to the next 3
+  every 15 seconds. Click any headline to open it in your browser.
 - **Three view states**:
   - **Full** — time, weather, and news.
   - **Small** — time and weather only, in a noticeably tighter window.
@@ -30,18 +30,16 @@ news and research sources.
 |---|---|---|
 | World | BBC World | official RSS |
 | Business | BBC Business | official RSS |
+| The Economist | Finance & Economics section | official RSS (economist.com/rss itself returns 403) |
+| Hacker News | Hacker News front page | official RSS |
 | El Comercio | El Comercio (Ecuador) | official RSS |
+| INEC | Ecuador's national statistics institute | official RSS |
 | Primicias | Primicias (Ecuador) | via Google News*, site has no server-side RSS |
 | GK | gk.city (Ecuador) | via Google News*, site blocks direct RSS requests |
 | La Hora | Diario La Hora (Ecuador) | via Google News*, site blocks direct RSS requests |
-| INEC | Ecuador's national statistics institute | official RSS |
-| Econ Research | NBER new working papers | official RSS |
 | Canada Econ | CBC Business | official RSS |
 | StatCan | Statistics Canada, "The Daily" | official Atom feed |
 | Bank of Canada | Bank of Canada press releases | official RSS (RSS 1.0/RDF) |
-| VoxEU | VoxEU / CEPR columns | via Google News*, voxeu.org's own feed only lists topic categories |
-| The Economist | Finance & Economics section | official RSS (economist.com/rss itself returns 403) |
-| Hacker News | Hacker News front page | official RSS |
 
 \* A handful of sites don't expose a working RSS/Atom feed for scripted
 requests (client-rendered pages, or bot-protection that 403s a plain

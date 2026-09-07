@@ -32,7 +32,7 @@ NEWS_FEEDS = [
     # Primicias is a client-rendered SPA with no server-side RSS, and GK
     # and La Hora both return 403 to a plain script request (Cloudflare
     # bot protection) — a site-scoped Google News search is the working
-    # substitute for all three, same pattern as VoxEU/StatCan below.
+    # substitute for all three.
     (
         "Primicias",
         "https://news.google.com/rss/search?q=site:primicias.ec&hl=es-419&gl=EC&ceid=EC:es-419",
@@ -49,14 +49,6 @@ NEWS_FEEDS = [
     ("Canada Econ", "https://www.cbc.ca/webfeed/rss/rss-business"),
     ("StatCan", "https://www150.statcan.gc.ca/n1/rss/dai-quo/0-eng.atom"),
     ("Bank of Canada", "https://www.bankofcanada.ca/content_type/press-releases/feed/"),
-    # --- Economic research --------------------------------------------
-    ("Econ Research", "https://www.nber.org/rss/new.xml"),
-    # VoxEU's own rss.xml only lists research-programme categories, not
-    # columns, since the site merged into cepr.org — same substitution.
-    (
-        "VoxEU",
-        "https://news.google.com/rss/search?q=site:cepr.org/voxeu&hl=en-GB&gl=GB&ceid=GB:en",
-    ),
 ]
 
 WEATHER_MINUTES = 15
@@ -220,7 +212,7 @@ def _entry_date(entry: ET.Element) -> str:
             except ValueError:
                 continue
 
-    # NBER's feed carries no per-item date at all — nothing to show.
+    # No recognized date field on this entry.
     return ""
 
 
@@ -256,10 +248,8 @@ def _truncate(text: str, limit: int) -> str:
 
 def _format_headline(source: str, title: str, date: str, limit: int) -> str:
     prefix = f"[{source}] "
-    # NBER's feed carries no per-item date at all (checked: absent from
-    # both the item and the channel) — "new" is honest here since it's
-    # literally the "new working papers" feed, rather than a fabricated
-    # date. Every headline still gets a "(...)" suffix either way.
+    # Every headline gets a "(...)" suffix; if a feed has no date field
+    # at all, "new" is an honest fallback rather than a fabricated date.
     suffix = f" ({date or 'new'})"
     # The suffix must always show in full, so only the title is
     # truncated to fit what's left of the character budget.
