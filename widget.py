@@ -22,7 +22,7 @@ WEATHER_URL = (
 NEWS_FEEDS = [
     ("World", "https://feeds.bbci.co.uk/news/world/rss.xml"),
     ("Business", "https://feeds.bbci.co.uk/news/business/rss.xml"),
-    ("Ecuador", "https://www.elcomercio.com/feed"),
+    ("El Comercio", "https://www.elcomercio.com/feed"),
     ("Econ Research", "https://www.nber.org/rss/new.xml"),
     ("Canada Econ", "https://www.cbc.ca/webfeed/rss/rss-business"),
     ("Hacker News", "https://news.ycombinator.com/rss"),
@@ -33,6 +33,22 @@ NEWS_FEEDS = [
     (
         "VoxEU",
         "https://news.google.com/rss/search?q=site:cepr.org/voxeu&hl=en-GB&gl=GB&ceid=GB:en",
+    ),
+    # Primicias is a client-rendered SPA with no server-side RSS, and GK
+    # and La Hora both return 403 to a plain script request (Cloudflare
+    # bot protection) — a site-scoped Google News search is the working
+    # substitute for all three, same pattern as VoxEU/StatCan above.
+    (
+        "Primicias",
+        "https://news.google.com/rss/search?q=site:primicias.ec&hl=es-419&gl=EC&ceid=EC:es-419",
+    ),
+    (
+        "GK",
+        "https://news.google.com/rss/search?q=site:gk.city&hl=es-419&gl=EC&ceid=EC:es-419",
+    ),
+    (
+        "La Hora",
+        "https://news.google.com/rss/search?q=site:lahora.com.ec&hl=es-419&gl=EC&ceid=EC:es-419",
     ),
     ("Bank of Canada", "https://www.bankofcanada.ca/content_type/press-releases/feed/"),
     ("The Economist", "https://www.economist.com/finance-and-economics/rss.xml"),
@@ -47,8 +63,22 @@ HEADLINES_VISIBLE = 3
 # Some feed hosts reject requests with no User-Agent header.
 REQUEST_HEADERS = {"User-Agent": "Mozilla/5.0 (desktop-widget)"}
 
-SMALL_WIDTH, SMALL_HEIGHT = 280, 150
+SMALL_WIDTH, SMALL_HEIGHT = 195, 105
 FULL_WIDTH, FULL_HEIGHT = 300, 380
+
+# Matches the Libertinus serif face used in Daniel's ECON 899 paper —
+# Libertinus itself isn't registered as a system font on Windows, but
+# Garamond (installed) gives the widget the same serif, academic feel.
+TEXT_FAMILY = "Garamond"
+
+TIME_FONT_FULL = (TEXT_FAMILY, 28)
+TIME_FONT_SMALL = (TEXT_FAMILY, 20)
+DATE_FONT = (TEXT_FAMILY, 11)
+WEATHER_ICON_FONT_FULL = ("Segoe UI Emoji", 22)
+WEATHER_ICON_FONT_SMALL = ("Segoe UI Emoji", 16)
+WEATHER_TEXT_FONT_FULL = (TEXT_FAMILY, 12)
+WEATHER_TEXT_FONT_SMALL = (TEXT_FAMILY, 10)
+HEADLINE_FONT = (TEXT_FAMILY, 10)
 
 # WMO weather codes (Open-Meteo), grouped into short display text and icon.
 WEATHER_CODES = {
@@ -249,8 +279,9 @@ class DesktopWidget:
         self.root.geometry(f"{width}x{height}+{x_position}+{y_position}")
 
     def _build_layout(self) -> None:
-        header = tk.Frame(self.root, bg=BACKGROUND)
-        header.pack(fill="x", padx=10, pady=(8, 0))
+        self.header = tk.Frame(self.root, bg=BACKGROUND)
+        self.header.pack(fill="x", padx=10, pady=(8, 0))
+        header = self.header
 
         refresh_button = tk.Label(
             header, text="⟳", fg=MUTED, bg=BACKGROUND, cursor="hand2"
@@ -277,30 +308,30 @@ class DesktopWidget:
         minimize_button.bind("<Button-1>", lambda _: self._minimize())
 
         self.time_label = tk.Label(
-            self.root, font=("Segoe UI", 26), fg=FOREGROUND, bg=BACKGROUND
+            self.root, font=TIME_FONT_FULL, fg=FOREGROUND, bg=BACKGROUND
         )
         self.time_label.pack(pady=(4, 0))
 
         self.date_label = tk.Label(
-            self.root, font=("Segoe UI", 10), fg=MUTED, bg=BACKGROUND
+            self.root, font=DATE_FONT, fg=MUTED, bg=BACKGROUND
         )
         self.date_label.pack()
 
-        weather_frame = tk.Frame(self.root, bg=BACKGROUND)
-        weather_frame.pack(pady=(12, 8))
+        self.weather_frame = tk.Frame(self.root, bg=BACKGROUND)
+        self.weather_frame.pack(pady=(12, 8))
 
         self.weather_icon_label = tk.Label(
-            weather_frame,
+            self.weather_frame,
             text="…",
-            font=("Segoe UI Emoji", 22),
+            font=WEATHER_ICON_FONT_FULL,
             bg=BACKGROUND,
         )
         self.weather_icon_label.pack(side="left", padx=(0, 8))
 
         self.weather_text_label = tk.Label(
-            weather_frame,
+            self.weather_frame,
             text="Loading weather…",
-            font=("Segoe UI", 11),
+            font=WEATHER_TEXT_FONT_FULL,
             fg=ACCENT,
             bg=BACKGROUND,
             wraplength=220,
@@ -316,7 +347,7 @@ class DesktopWidget:
             headline_label = tk.Label(
                 self.news_frame,
                 text="",
-                font=("Segoe UI", 9),
+                font=HEADLINE_FONT,
                 fg=FOREGROUND,
                 bg=BACKGROUND,
                 wraplength=270,
@@ -352,13 +383,28 @@ class DesktopWidget:
     def _enter_small_mode(self, resize: bool = True) -> None:
         self.separator.pack_forget()
         self.news_frame.pack_forget()
+        self.date_label.pack_forget()
         self.expanded = False
         self.mode_button.config(text="▾")
+
+        self.header.pack_configure(pady=(4, 0))
+        self.time_label.config(font=TIME_FONT_SMALL)
+        self.time_label.pack_configure(pady=(0, 0))
+        self.weather_frame.pack_configure(pady=(2, 4))
+        self.weather_icon_label.config(font=WEATHER_ICON_FONT_SMALL)
+        self.weather_text_label.config(font=WEATHER_TEXT_FONT_SMALL, wraplength=150)
 
         if resize:
             self._resize_for_mode()
 
     def _enter_full_mode(self, resize: bool = True) -> None:
+        self.header.pack_configure(pady=(8, 0))
+        self.time_label.config(font=TIME_FONT_FULL)
+        self.time_label.pack_configure(pady=(4, 0))
+        self.date_label.pack(before=self.weather_frame)
+        self.weather_frame.pack_configure(pady=(12, 8))
+        self.weather_icon_label.config(font=WEATHER_ICON_FONT_FULL)
+        self.weather_text_label.config(font=WEATHER_TEXT_FONT_FULL, wraplength=220)
         self.separator.pack(fill="x", padx=10, pady=(4, 0))
         self.news_frame.pack(fill="x", padx=10, pady=(10, 0))
         self.expanded = True
