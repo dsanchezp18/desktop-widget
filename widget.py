@@ -35,6 +35,7 @@ NEWS_FEEDS = [
         "https://news.google.com/rss/search?q=site:cepr.org/voxeu&hl=en-GB&gl=GB&ceid=GB:en",
     ),
     ("Bank of Canada", "https://www.bankofcanada.ca/content_type/press-releases/feed/"),
+    ("The Economist", "https://www.economist.com/finance-and-economics/rss.xml"),
 ]
 
 WEATHER_MINUTES = 15
