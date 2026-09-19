@@ -1,13 +1,20 @@
 """Always-on-top desktop widget: time, Edmonton weather, and news headlines."""
 
+import sys
 import threading
 import tkinter as tk
+import urllib.error
 import urllib.request
 import webbrowser
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from email.utils import parsedate_to_datetime
 from json import loads
+
+# Set to True (or run with an env var check) to see per-feed/weather fetch
+# errors on stderr when launched as `python widget.py`; silent under
+# `pythonw`, which has no console to write to anyway.
+DEBUG = False
 
 # Edmonton, AB coordinates.
 LATITUDE = 53.5461
@@ -65,6 +72,32 @@ HEADLINES_VISIBLE = 3
 
 # Some feed hosts reject requests with no User-Agent header.
 REQUEST_HEADERS = {"User-Agent": "Mozilla/5.0 (desktop-widget)"}
+
+# Caps how much of a response body is read, so a misbehaving or malicious
+# host can't exhaust memory by streaming an unbounded body within the
+# request timeout; 5 MB comfortably covers any real weather/feed response.
+MAX_RESPONSE_BYTES = 5 * 1024 * 1024
+
+
+class _HttpsOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
+    # Every source URL in this file is a hardcoded https:// constant;
+    # refusing a redirect to a non-https URL stops a compromised or
+    # misconfigured host from silently downgrading the connection.
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not newurl.startswith("https://"):
+            raise urllib.error.HTTPError(
+                newurl, code, "Refused non-HTTPS redirect", headers, fp
+            )
+
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_OPENER = urllib.request.build_opener(_HttpsOnlyRedirectHandler)
+
+
+def _log_fetch_error(label: str, exc: Exception) -> None:
+    if DEBUG:
+        print(f"[{label}] fetch error: {exc}", file=sys.stderr)
 
 SMALL_WIDTH, SMALL_HEIGHT = 195, 105
 FULL_WIDTH, FULL_HEIGHT = 300, 400
@@ -151,8 +184,8 @@ MUTED = "#9a9a9a"
 def fetch_weather() -> tuple[str, str]:
     request = urllib.request.Request(WEATHER_URL, headers=REQUEST_HEADERS)
 
-    with urllib.request.urlopen(request, timeout=10) as response:
-        payload = loads(response.read())
+    with _OPENER.open(request, timeout=10) as response:
+        payload = loads(response.read(MAX_RESPONSE_BYTES))
 
     current = payload["current"]
     temperature = round(current["temperature_2m"])
@@ -179,14 +212,30 @@ def _entry_title(entry: ET.Element) -> str:
 
 
 def _entry_link(entry: ET.Element) -> str:
-    link_element = entry.find("{*}link")
+    # RSS/RDF entries have exactly one <link>. Atom entries may have
+    # several (rel="self", "alternate", "related", ...) in unspecified
+    # order, so pick the one whose rel is "alternate" (Atom's default when
+    # rel is omitted) rather than assuming the first <link> is the article.
+    link_elements = entry.findall("{*}link")
+    chosen = next(
+        (el for el in link_elements if el.get("rel", "alternate") == "alternate"),
+        link_elements[0] if link_elements else None,
+    )
 
-    if link_element is None:
+    if chosen is None:
         return ""
 
     # RSS/RDF put the URL as the element's text; Atom puts it in an
     # href attribute instead.
-    return (link_element.get("href") or link_element.text or "").strip()
+    link = (chosen.get("href") or chosen.text or "").strip()
+
+    # Only ever hand an http(s) URL to webbrowser.open() downstream — a
+    # malicious/compromised feed entry could otherwise supply a file:// or
+    # other OS-handler URI.
+    if not link.lower().startswith(("http://", "https://")):
+        return ""
+
+    return link
 
 
 def _entry_date(entry: ET.Element) -> str:
@@ -207,8 +256,17 @@ def _entry_date(entry: ET.Element) -> str:
         raw_date = entry.findtext(f"{{*}}{tag}")
 
         if raw_date:
+            # fromisoformat() only accepts a trailing "Z" (Zulu/UTC) suffix
+            # from Python 3.11 onward; normalize it to an explicit +00:00
+            # offset so this also parses correctly on 3.9/3.10, which the
+            # README lists as the minimum supported version.
+            normalized_date = raw_date.strip()
+
+            if normalized_date.endswith("Z"):
+                normalized_date = normalized_date[:-1] + "+00:00"
+
             try:
-                return datetime.fromisoformat(raw_date.strip()).strftime("%b %d")
+                return datetime.fromisoformat(normalized_date).strftime("%b %d")
             except ValueError:
                 continue
 
@@ -219,11 +277,11 @@ def _entry_date(entry: ET.Element) -> str:
 def fetch_one_feed(feed_url: str) -> list[tuple[str, str, str]]:
     request = urllib.request.Request(feed_url, headers=REQUEST_HEADERS)
 
-    with urllib.request.urlopen(request, timeout=10) as response:
+    with _OPENER.open(request, timeout=10) as response:
         # A leading byte-order mark or stray whitespace before the XML
         # declaration (seen on some feeds, e.g. INEC's) makes ElementTree
         # reject an otherwise valid document.
-        raw = response.read().lstrip()
+        raw = response.read(MAX_RESPONSE_BYTES).lstrip()
 
     root = ET.fromstring(raw)
 
@@ -264,9 +322,10 @@ def fetch_headlines() -> list[tuple[str, str, str, str]]:
     for label, feed_url in NEWS_FEEDS:
         try:
             feed_items = fetch_one_feed(feed_url)
-        except Exception:
+        except Exception as exc:
             # One unreachable or malformed feed should not blank out the
             # headlines from every other, working feed.
+            _log_fetch_error(label, exc)
             continue
 
         for title, link, date in feed_items:
@@ -312,6 +371,12 @@ class DesktopWidget:
         # children once they exist, so the fixed size must be applied
         # after the layout is built, not before.
         self.root.update_idletasks()
+        # winfo_screenwidth() reports the primary monitor only; on a
+        # multi-monitor setup where the primary isn't the rightmost
+        # display, "top-right" anchors to the primary monitor's edge, not
+        # necessarily the display the user has in mind. Not fixed here —
+        # proper multi-monitor placement needs Win32 monitor-enumeration
+        # calls, disproportionate for a personal single-file widget.
         screen_width = self.root.winfo_screenwidth()
         x_position = screen_width - FULL_WIDTH - 20
         y_position = 20
@@ -330,34 +395,28 @@ class DesktopWidget:
         y_position = self.root.winfo_y()
         self.root.geometry(f"{width}x{height}+{x_position}+{y_position}")
 
+    def _make_header_button(
+        self, side: str, text: str, command, padx: tuple[int, int] = (0, 0)
+    ) -> tk.Label:
+        button = tk.Label(self.header, text=text, fg=MUTED, bg=BACKGROUND, cursor="hand2")
+        button.pack(side=side, padx=padx)
+        button.bind("<Button-1>", lambda _: command())
+        return button
+
     def _build_layout(self) -> None:
         self.header = tk.Frame(self.root, bg=BACKGROUND)
         self.header.pack(fill="x", padx=10, pady=(8, 0))
-        header = self.header
 
-        refresh_button = tk.Label(
-            header, text="⟳", fg=MUTED, bg=BACKGROUND, cursor="hand2"
+        self._make_header_button("left", "⟳", self._refresh_all)
+        self.mode_button = self._make_header_button(
+            "left", "▾", self._toggle_mode, padx=(6, 0)
         )
-        refresh_button.pack(side="left")
-        refresh_button.bind("<Button-1>", lambda _: self._refresh_all())
 
-        self.mode_button = tk.Label(
-            header, text="▾", fg=MUTED, bg=BACKGROUND, cursor="hand2"
-        )
-        self.mode_button.pack(side="left", padx=(6, 0))
-        self.mode_button.bind("<Button-1>", lambda _: self._toggle_mode())
-
-        close_button = tk.Label(
-            header, text="×", fg=MUTED, bg=BACKGROUND, cursor="hand2"
-        )
-        close_button.pack(side="right")
-        close_button.bind("<Button-1>", lambda _: self.root.destroy())
-
-        minimize_button = tk.Label(
-            header, text="–", fg=MUTED, bg=BACKGROUND, cursor="hand2"
-        )
-        minimize_button.pack(side="right", padx=(0, 6))
-        minimize_button.bind("<Button-1>", lambda _: self._minimize())
+        # Right-packed widgets stack from the header's right edge inward,
+        # so packing close before minimize puts minimize to close's left —
+        # the opposite of left-packed insertion order above.
+        self._make_header_button("right", "×", self.root.destroy)
+        self._make_header_button("right", "–", self._minimize, padx=(0, 6))
 
         self.time_label = tk.Label(
             self.root, font=TIME_FONT_FULL, fg=FOREGROUND, bg=BACKGROUND
@@ -474,6 +533,17 @@ class DesktopWidget:
         if not self.minimized:
             return
 
+        # Toggling overrideredirect() in _minimize() recreates the
+        # underlying OS window, which can fire a transient <Map> event
+        # before iconify() actually finishes. Deferring the real check to
+        # the next idle cycle avoids misreading that transient event as
+        # the user restoring the window mid-minimize.
+        self.root.after(50, self._finish_restore_check)
+
+    def _finish_restore_check(self) -> None:
+        if not self.minimized:
+            return
+
         if self.root.state() != "normal":
             return
 
@@ -499,14 +569,34 @@ class DesktopWidget:
     def _fetch_weather_thread(self) -> None:
         try:
             icon, text = fetch_weather()
-        except Exception:
-            icon, text = "⚠️", "Weather unavailable"
+        except Exception as exc:
+            _log_fetch_error("weather", exc)
+            self._safe_after(0, self._show_weather_error)
+            return
 
-        self.root.after(0, lambda: self._show_weather(icon, text))
+        self._safe_after(0, lambda: self._show_weather(icon, text))
+
+    def _safe_after(self, delay_ms: int, callback) -> None:
+        # A fetch thread can finish after the user has already closed the
+        # widget (root.destroy() on the × button); scheduling against a
+        # destroyed root raises TclError, which is otherwise uncaught and
+        # invisible under pythonw (no console to show it on).
+        try:
+            self.root.after(delay_ms, callback)
+        except tk.TclError:
+            pass
 
     def _show_weather(self, icon: str, text: str) -> None:
         self.weather_icon_label.config(text=icon)
         self.weather_text_label.config(text=text)
+
+    def _show_weather_error(self) -> None:
+        # Keep the last known-good reading on screen through a transient
+        # failure (matching how stale headlines are kept below); only show
+        # the error text if nothing has loaded yet this session.
+        if self.weather_text_label.cget("text") == "Loading weather…":
+            self.weather_icon_label.config(text="⚠️")
+            self.weather_text_label.config(text="Weather unavailable")
 
     def _refresh_news(self) -> None:
         threading.Thread(target=self._fetch_news_thread, daemon=True).start()
@@ -515,10 +605,11 @@ class DesktopWidget:
     def _fetch_news_thread(self) -> None:
         try:
             headlines = fetch_headlines()
-        except Exception:
+        except Exception as exc:
+            _log_fetch_error("news", exc)
             headlines = []
 
-        self.root.after(0, lambda: self._store_headlines(headlines))
+        self._safe_after(0, lambda: self._store_headlines(headlines))
 
     def _store_headlines(self, headlines: list[tuple[str, str, str, str]]) -> None:
         if headlines:
@@ -547,7 +638,12 @@ class DesktopWidget:
                 else:
                     headline_label.config(text="")
 
-            self.headline_index = (self.headline_index + HEADLINES_VISIBLE) % total
+            # Advance by however many headlines were actually shown, not
+            # the fixed HEADLINES_VISIBLE constant: when total < that
+            # constant (few feeds loaded, or a feed failure), advancing by
+            # the fixed amount could skip past entries the shorter list
+            # never displayed.
+            self.headline_index = (self.headline_index + len(visible)) % total
 
         self.root.after(HEADLINE_GROUP_SECONDS * 1000, self._rotate_headline)
 
